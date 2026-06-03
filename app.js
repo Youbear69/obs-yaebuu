@@ -126,15 +126,66 @@ class OBSWebSocketClient {
     }
 
     async _generateAuth(password, salt, challenge) {
-        const encoder = new TextEncoder();
+        // Use native Web Crypto API if available (HTTPS or localhost)
+        if (window.crypto && window.crypto.subtle) {
+            const encoder = new TextEncoder();
+            const secretBuf = await window.crypto.subtle.digest('SHA-256', encoder.encode(password + salt));
+            const base64Secret = btoa(String.fromCharCode(...new Uint8Array(secretBuf)));
+            const authBuf = await window.crypto.subtle.digest('SHA-256', encoder.encode(base64Secret + challenge));
+            return btoa(String.fromCharCode(...new Uint8Array(authBuf)));
+        } 
+        // Fallback for non-secure contexts (LAN access via HTTP)
+        else {
+            const base64Secret = this._hexToBase64(this._sha256(password + salt));
+            return this._hexToBase64(this._sha256(base64Secret + challenge));
+        }
+    }
 
-        // Step 1: SHA256(password + salt) → base64
-        const secretBuf = await crypto.subtle.digest('SHA-256', encoder.encode(password + salt));
-        const base64Secret = btoa(String.fromCharCode(...new Uint8Array(secretBuf)));
+    _hexToBase64(hex) {
+        return btoa(hex.match(/\w{2}/g).map(a => String.fromCharCode(parseInt(a, 16))).join(""));
+    }
 
-        // Step 2: SHA256(base64Secret + challenge) → base64
-        const authBuf = await crypto.subtle.digest('SHA-256', encoder.encode(base64Secret + challenge));
-        return btoa(String.fromCharCode(...new Uint8Array(authBuf)));
+    // Compact Pure JS SHA-256 Implementation
+    _sha256(ascii) {
+        function rightRotate(value, amount) { return (value>>>amount) | (value<<(32 - amount)); }
+        var mathPow = Math.pow, maxWord = mathPow(2, 32), lengthProperty = 'length', i, j, result = '', words = [], asciiBitLength = ascii[lengthProperty]*8;
+        var hash = this._sha256.h = this._sha256.h || [], k = this._sha256.k = this._sha256.k || [], primeCounter = k[lengthProperty];
+        var isComposite = {};
+        for (var candidate = 2; primeCounter < 64; candidate++) {
+            if (!isComposite[candidate]) {
+                for (i = 0; i < 313; i += candidate) isComposite[i] = candidate;
+                hash[primeCounter] = (mathPow(candidate, .5)*maxWord)|0;
+                k[primeCounter++] = (mathPow(candidate, 1/3)*maxWord)|0;
+            }
+        }
+        ascii += '\x80';
+        while (ascii[lengthProperty]%64 - 56) ascii += '\x00';
+        for (i = 0; i < ascii[lengthProperty]; i++) {
+            j = ascii.charCodeAt(i);
+            if (j>>8) return; 
+            words[i>>2] |= j << ((3 - i)%4)*8;
+        }
+        words[words[lengthProperty]] = ((asciiBitLength/maxWord)|0);
+        words[words[lengthProperty]] = (asciiBitLength);
+        for (j = 0; j < words[lengthProperty];) {
+            var w = words.slice(j, j += 16), oldHash = hash;
+            hash = hash.slice(0, 8);
+            for (i = 0; i < 64; i++) {
+                var w15 = w[i - 15], w2 = w[i - 2], a = hash[0], e = hash[4];
+                var temp1 = hash[7] + (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)) + ((e&hash[5])^((~e)&hash[6])) + k[i] + (w[i] = (i < 16) ? w[i] : (w[i - 16] + (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15>>>3)) + w[i - 7] + (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2>>>10)))|0);
+                var temp2 = (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)) + ((a&hash[1])^(a&hash[2])^(hash[1]&hash[2]));
+                hash = [(temp1 + temp2)|0].concat(hash);
+                hash[4] = (hash[4] + temp1)|0;
+            }
+            for (i = 0; i < 8; i++) hash[i] = (hash[i] + oldHash[i])|0;
+        }
+        for (i = 0; i < 8; i++) {
+            for (j = 3; j + 1; j--) {
+                var b = (hash[i]>>(j*8))&255;
+                result += ((b < 16) ? 0 : '') + b.toString(16);
+            }
+        }
+        return result;
     }
 
     async call(requestType, requestData = {}) {
